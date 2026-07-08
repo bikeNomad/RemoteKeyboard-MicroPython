@@ -66,7 +66,10 @@ runs under it, and all firmware files should stay compilable with it:
   pinned by tests/test_core.py — the AVR version's unmatched-event
   glitch bug must not be reintroduced.
 - Event encoding (1 byte): bit 6 press, bits 5:3 row, bits 2:0 column.
-  This caps the matrix at 8 rows × 6 columns + aux pseudo-column 6.
+ The aux switches use the pseudo-column at index len(COL_PINS), which is
+ the highest column index, so it must fit the 3-bit column field. This
+ caps the matrix at 8 rows × 7 columns, with the aux pseudo-column at
+ index 7 (0-6 real columns + aux 7 when using the maximum).
 
 ## Host scripts
 

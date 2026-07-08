@@ -172,8 +172,8 @@ class RemoteKeyboard:
         self.n_aux = len(cfg.AUX_PINS)
         if self.n_rows > 8:
             raise ValueError("at most 8 rows (3-bit row in event encoding)")
-        if self.n_cols > 6:
-            raise ValueError("at most 6 columns (aux column must fit 3 bits)")
+        if self.n_cols > 7:
+            raise ValueError("at most 7 columns (aux column index must fit 3 bits)")
         if self.n_aux > 8:
             raise ValueError("at most 8 aux switches")
 

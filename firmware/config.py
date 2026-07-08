@@ -23,13 +23,14 @@
 # Row pins (matrix rows, read while a column is strobed; max 8)
 ROW_PINS = (2, 3, 4, 5, 6, 7, 8, 9)
 
-# Column pins (strobe inputs from the host keyboard controller; max 6,
-# so that the aux pseudo-column index still fits in 3 bits)
-COL_PINS = (10, 11, 12, 13, 14, 15)
+# Column pins (strobe inputs from the host keyboard controller; max 7,
+# so that the aux pseudo-column index len(COL_PINS) still fits in the
+# 3-bit column field of the event byte)
+COL_PINS = (10, 11, 12, 13, 14, 15, 16)
 
 # Auxiliary (non-matrix) switch pins, reported as rows of the pseudo-
 # column len(COL_PINS); max 8
-AUX_PINS = (16,)
+AUX_PINS = (17,)
 
 # Level an aux switch line reads when the switch is ON (0 = active low)
 AUX_ON_STATE = 0
