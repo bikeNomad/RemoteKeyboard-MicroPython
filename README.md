@@ -1,8 +1,8 @@
 # RemoteKeyboard (MicroPython)
 
-MicroPython port of the AVR [RemoteKeyboard](../RemoteKeyboard) firmware:
-monitor and control a matrix-scanned keyboard or keypad. The device sits
-on the keyboard matrix of an appliance (originally a Brother P-touch
+MicroPython port of my AVR [RemoteKeyboard](https://github.com/bikeNomad/RemoteKeyboard) firmware:
+monitor and control a matrix-scanned keyboard or keypad. The device attaches to
+the keyboard matrix of an appliance (originally a Brother P-touch
 Home & Hobby label printer), reports key presses/releases over serial,
 and can simulate key presses on command.
 
