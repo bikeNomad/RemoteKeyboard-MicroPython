@@ -77,7 +77,11 @@ def _install_fake_modules():
 
 
 _install_fake_modules()
-from remotekeyboard import RemoteKeyboard, sio_addresses_for  # noqa: E402
+from remotekeyboard import (  # noqa: E402
+    RemoteKeyboard,
+    esp32_gpio_addresses_for,
+    sio_addresses_for,
+)
 from core import EVENT_PRESS  # noqa: E402
 
 
@@ -112,6 +116,41 @@ class TestSioAddresses(unittest.TestCase):
     def test_unknown_chip_returns_none(self):
         for name in ("", None, "ESP32 module", "Some board with RP9999"):
             self.assertIsNone(sio_addresses_for(name))
+
+
+class TestEsp32Addresses(unittest.TestCase):
+    # Offsets verified against esp-idf soc/gpio_reg.h (same on every
+    # variant); only the peripheral base differs between S2 and S3.
+    # (IN=+0x3C, OUT_W1TS=+0x08, OUT_W1TC=+0x0C, ENABLE_W1TS=+0x24,
+    #  ENABLE_W1TC=+0x28)
+    ESP32S3 = (0x6000403C, 0x60004008, 0x6000400C, 0x60004024, 0x60004028)
+    ESP32S2 = (0x3F40403C, 0x3F404008, 0x3F40400C, 0x3F404024, 0x3F404028)
+
+    def test_s3(self):
+        self.assertEqual(
+            esp32_gpio_addresses_for("ESP32S3 module with ESP32S3"), self.ESP32S3
+        )
+
+    def test_s2(self):
+        self.assertEqual(
+            esp32_gpio_addresses_for("ESP32S2 module with ESP32S2"), self.ESP32S2
+        )
+
+    def test_s2_and_s3_use_different_bases(self):
+        # the dangerous case: the same offset but a wrong base would
+        # drive an unrelated peripheral
+        self.assertNotEqual(self.ESP32S2[0], self.ESP32S3[0])
+
+    def test_unknown_or_plain_esp32_returns_none(self):
+        # only S2/S3 are supported; the original ESP32 and unknown
+        # names fall back to the portable Pin path
+        for name in ("", None, "ESP32 module with ESP32", "Pico with RP2040"):
+            self.assertIsNone(esp32_gpio_addresses_for(name))
+
+    def test_sio_lookup_ignores_esp32_names(self):
+        # the two families' lookups stay disjoint
+        self.assertIsNone(sio_addresses_for("ESP32S3 module with ESP32S3"))
+        self.assertIsNone(esp32_gpio_addresses_for("Raspberry Pi Pico with RP2040"))
 
 
 class FakeIO:
@@ -275,6 +314,74 @@ class TestAuxSwitches(ScannerTestCase):
         self.assertEqual(pins[1 << 16].driven, 0)  # ON level (active low)
         self.scanner._aux_tick(None)
         self.assertEqual(self.events(), [])
+
+
+class RecordingMem32:
+    """mem32 stand-in that records writes and serves programmed reads."""
+
+    def __init__(self):
+        self.reads = {}     # addr -> value returned by reads
+        self.writes = []    # (addr, value) in order
+
+    def __getitem__(self, addr):
+        return self.reads.get(addr, 0)
+
+    def __setitem__(self, addr, value):
+        self.writes.append((addr, value))
+
+
+class TestRegisterPath(unittest.TestCase):
+    """Exercise the fast register path (used on RP2 and ESP32-S2/S3) with
+    the ESP32-S3 addresses, confirming reads and drives hit the right
+    registers rather than falling back to the Pin path."""
+
+    ADDRS = TestEsp32Addresses.ESP32S3  # (IN, OUT_SET, OUT_CLR, OE_SET, OE_CLR)
+
+    def setUp(self):
+        import remotekeyboard
+        self.mod = remotekeyboard
+        self._orig_mem32 = remotekeyboard.mem32
+        self._orig_detect = remotekeyboard._detect_register_addresses
+        self.mem = RecordingMem32()
+        remotekeyboard.mem32 = self.mem
+        remotekeyboard._detect_register_addresses = lambda: self.ADDRS
+        self.scanner = RemoteKeyboard(make_config())
+
+    def tearDown(self):
+        self.mod.mem32 = self._orig_mem32
+        self.mod._detect_register_addresses = self._orig_detect
+
+    def test_register_path_selected(self):
+        self.assertEqual(self.scanner._read_raw, self.scanner._read_raw_reg)
+        self.assertFalse(hasattr(self.scanner, "_io_pins"))
+
+    def test_read_raw_reads_in_register(self):
+        in_addr = self.ADDRS[0]
+        self.mem.reads[in_addr] = 0x1234
+        self.assertEqual(self.scanner._read_raw(), 0x1234)
+
+    def test_tristate_clears_oe_and_out(self):
+        self.mem.writes.clear()
+        self.scanner._tristate(0xABC)
+        # OE_CLR then OUT_CLR, both with the mask
+        self.assertEqual(self.mem.writes, [(self.ADDRS[4], 0xABC), (self.ADDRS[2], 0xABC)])
+
+    def test_drive_high_sets_out_then_oe(self):
+        self.mem.writes.clear()
+        self.scanner._drive(0x30, True)
+        self.assertEqual(self.mem.writes, [(self.ADDRS[1], 0x30), (self.ADDRS[3], 0x30)])
+
+    def test_drive_low_clears_out_then_sets_oe(self):
+        self.mem.writes.clear()
+        self.scanner._drive(0x30, False)
+        self.assertEqual(self.mem.writes, [(self.ADDRS[2], 0x30), (self.ADDRS[3], 0x30)])
+
+    def test_high_pin_forces_generic_path(self):
+        # a pin >= 32 is out of the low-bank registers' reach: even with a
+        # register map available, the scanner must use the Pin path
+        scanner = RemoteKeyboard(make_config(AUX_PINS=(35,)))
+        self.assertEqual(scanner._read_raw, scanner._read_raw_generic)
+        self.assertTrue(hasattr(scanner, "_io_pins"))
 
 
 class TestCommands(ScannerTestCase):

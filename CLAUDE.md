@@ -6,8 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MicroPython port of the AVR firmware in the sibling `../RemoteKeyboard`
 repository: monitors and controls matrix-scanned keyboards. Targets the
-Raspberry Pi Pico (RP2040) by default; the serial protocol is identical
-to the (fixed) AVR version. See README.md for wiring and usage.
+Raspberry Pi Pico (RP2040) by default; also supports RP2350 and
+ESP32-S2/S3 via the fast register path, and any other port via the
+portable Pin fallback. The serial protocol is identical to the (fixed)
+AVR version. See README.md for wiring and usage.
 
 ## Commands
 
@@ -30,18 +32,25 @@ runs under it, and all firmware files should stay compilable with it:
   under both CPython (for tests) and MicroPython. Do not import
   `machine`/`micropython` there.
 - `firmware/remotekeyboard.py` holds all hardware access. The column pin
-  IRQ runs **hard** on RP2040/RP2350: its call paths (`_col_isr`,
-  `_read_rows`, `_assert_rows`, `_queue_reports`, the `core.py` methods,
-  and the RP2 GPIO helpers) must not allocate — no f-strings, floats, or
-  `for i in range(...)`; they use `while` loops, preallocated
-  bytearray/array tables, and `mem32` SIO register access.
-- The SIO register map differs between RP2040 and RP2350 (RP2350
-  interleaves the high-bank GPIO registers), so `sio_addresses_for()`
-  picks the right addresses from the machine name; unidentified RP2
-  chips fall back to the portable Pin path. If you touch those offsets,
-  verify against pico-sdk `hardware/regs/sio.h` — a wrong table silently
-  drives the wrong registers. `sio_addresses_for()` is a pure function
-  covered by tests/test_scanner.py.
+  IRQ runs **hard** on the register-path chips (RP2040/RP2350 and
+  ESP32-S2/S3): its call paths (`_col_isr`, `_read_rows`, `_assert_rows`,
+  `_queue_reports`, the `core.py` methods, and the `_*_reg` GPIO helpers)
+  must not allocate — no f-strings, floats, or `for i in range(...)`;
+  they use `while` loops, preallocated bytearray/array tables, and
+  `mem32` register access.
+- The fast path drives GPIO through a five-address tuple
+  `(IN, OUT_SET, OUT_CLR, OE_SET, OE_CLR)` shared by both chip families;
+  `_detect_register_addresses()` picks it from the machine name.
+  `sio_addresses_for()` returns the RP2 SIO addresses (RP2350
+  interleaves its high-bank registers, so its offsets differ from
+  RP2040) and `esp32_gpio_addresses_for()` returns the ESP32-S2/S3 GPIO
+  addresses (same offsets on every variant, different peripheral base).
+  Both are pure functions covered by tests/test_scanner.py. If you touch
+  those offsets, verify RP2 against pico-sdk `hardware/regs/sio.h` and
+  ESP32 against esp-idf `soc/gpio_reg.h` — a wrong table silently drives
+  the wrong registers. The register path reaches only GPIOs 0–31, so a
+  config with any pin ≥ 32, or an unidentified chip, falls back to the
+  portable Pin path (`_*_generic`, soft IRQ).
 - ISRs never write to the serial port; key events go through
   `core.EventQueue` (SPSC ring: ISRs write head, main loop writes tail)
   and the main loop transmits them. The aux `Timer` callback wraps its

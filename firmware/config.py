@@ -6,8 +6,19 @@
 # column is strobed by the host keyboard controller), columns are inputs
 # watched with pin-change interrupts.
 #
-# NOTE: the RP2040 is a 3.3 V part. If the keyboard being monitored runs
-# at 5 V, level shifting is required.
+# Supported fast-path targets: RP2040, RP2350, and ESP32-S2/S3 (the
+# firmware auto-detects the chip and uses direct GPIO register access).
+# Any other MicroPython port still works through the portable Pin path.
+#
+# On ESP32-S2/S3, keep every pin below GPIO 32 (the fast register path
+# only reaches the low GPIO bank; higher pins force the slower Pin path)
+# and avoid the strapping, flash/PSRAM, and native-USB pins. An example:
+#     ROW_PINS = (1, 2, 4, 5, 6, 7, 15, 16)
+#     COL_PINS = (17, 18, 8, 9, 10, 11)
+#     AUX_PINS = (12,)
+#
+# NOTE: these are 3.3 V parts. If the keyboard being monitored runs at
+# 5 V, level shifting is required.
 
 # Row pins (matrix rows, read while a column is strobed; max 8)
 ROW_PINS = (2, 3, 4, 5, 6, 7, 8, 9)

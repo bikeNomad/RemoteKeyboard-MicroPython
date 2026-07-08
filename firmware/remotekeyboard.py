@@ -33,25 +33,42 @@ from machine import Pin, Timer, mem32
 
 from core import MatrixDebouncer, EventQueue, EVENT_PRESS, event_row, event_column
 
-try:
-    import rp2  # noqa: F401
-
-    _RP2 = True
-except ImportError:
-    _RP2 = False
-
-# SIO single-cycle GPIO registers: fast, allocation-free access from a
-# hard IRQ. The SIO base is 0xD0000000 on both RP2 chips, but RP2350
-# interleaves the high-bank (GPIO 32+) registers between the low-bank
-# ones, so every offset except GPIO_IN differs from RP2040. Guessing is
-# unsafe: applying the RP2040 offsets on an RP2350 puts GPIO_OUT_CLR
-# where GPIO_OUT_SET lives, so a pin *clear* would *set* the pin.
-# Offsets verified against pico-sdk hardware/regs/sio.h for each chip.
+# Fast, allocation-free GPIO access from the column hard IRQ uses direct
+# register writes via machine.mem32. Two chip families are supported;
+# both expose the same five operations, so the fast path only needs
+# their absolute addresses as (IN, OUT_SET, OUT_CLR, OE_SET, OE_CLR):
+#
+# - RP2040/RP2350: the SIO single-cycle GPIO registers at 0xD0000000.
+#   The SIO base is the same on both chips, but RP2350 interleaves the
+#   high-bank (GPIO 32+) registers between the low-bank ones, so every
+#   offset except GPIO_IN differs from RP2040. Guessing is unsafe:
+#   applying the RP2040 offsets on an RP2350 puts GPIO_OUT_CLR where
+#   GPIO_OUT_SET lives, so a pin *clear* would *set* the pin.
+# - ESP32-S2/S3: the GPIO peripheral registers. The register offsets are
+#   identical on every ESP32 variant; only the peripheral base differs.
+#   OUT_SET/OUT_CLR are the OUT_W1TS/W1TC set-and-clear registers and
+#   OE_SET/OE_CLR are ENABLE_W1TS/W1TC. Driving works because Pin.IN
+#   leaves the pad routed from GPIO_OUT with its output enable off, so
+#   toggling ENABLE alone tristates or drives it.
+#
+# Only the low GPIO bank (0..31) is reachable this way, so a config with
+# any pin >= 32 falls back to the portable Pin path (see __init__). RP2
+# offsets verified against pico-sdk hardware/regs/sio.h; ESP32 offsets
+# against esp-idf soc/gpio_reg.h.
 _SIO_BASE = 0xD0000000
 # (GPIO_IN, GPIO_OUT_SET, GPIO_OUT_CLR, GPIO_OE_SET, GPIO_OE_CLR)
 _SIO_OFFSETS = {
     "RP2040": (0x004, 0x014, 0x018, 0x024, 0x028),
     "RP2350": (0x004, 0x018, 0x020, 0x038, 0x040),
+}
+
+# ESP32 GPIO registers: (GPIO_IN, GPIO_OUT_W1TS, GPIO_OUT_W1TC,
+# GPIO_ENABLE_W1TS, GPIO_ENABLE_W1TC). Same offsets on every variant;
+# only the peripheral base differs.
+_ESP32_OFFSETS = (0x03C, 0x008, 0x00C, 0x024, 0x028)
+_ESP32_BASES = {
+    "ESP32S3": 0x60004000,
+    "ESP32S2": 0x3F404000,
 }
 
 
@@ -70,9 +87,25 @@ def sio_addresses_for(machine_name):
     return None
 
 
-def _detect_sio_addresses():
-    """Identify the running RP2 chip from the machine name and return
-    its SIO addresses, or None if it can't be positively identified."""
+def esp32_gpio_addresses_for(machine_name):
+    """Absolute (IN, OUT_SET, OUT_CLR, OE_SET, OE_CLR) GPIO register
+    addresses for the ESP32-S2/S3 named in machine_name, or None if it
+    names no supported ESP32 variant. These registers reach only the low
+    GPIO bank (0..31); the caller must keep every configured pin < 32."""
+    if machine_name:
+        # neither name is a substring of the other, but be explicit
+        for chip in ("ESP32S3", "ESP32S2"):
+            if chip in machine_name:
+                base = _ESP32_BASES[chip]
+                return tuple(base + off for off in _ESP32_OFFSETS)
+    return None
+
+
+def _detect_register_addresses():
+    """Identify the running chip from its machine name and return the
+    (IN, OUT_SET, OUT_CLR, OE_SET, OE_CLR) register addresses for the
+    fast GPIO path, or None if it can't be positively identified. Any
+    unrecognized chip falls back to the portable Pin path."""
     names = []
     try:
         names.append(sys.implementation._machine)
@@ -85,7 +118,7 @@ def _detect_sio_addresses():
     except Exception:
         pass
     for name in names:
-        addrs = sio_addresses_for(name)
+        addrs = sio_addresses_for(name) or esp32_gpio_addresses_for(name)
         if addrs is not None:
             return addrs
     return None
@@ -191,14 +224,16 @@ class RemoteKeyboard:
         self.col_pins = [Pin(g, Pin.IN) for g in cfg.COL_PINS]
         self.aux_pins = [Pin(g, Pin.IN) for g in cfg.AUX_PINS]
 
-        sio = _detect_sio_addresses() if _RP2 else None
-        if sio is not None:
-            # fast SIO-register path with chip-correct register addresses
-            (self._sio_in, self._sio_out_set, self._sio_out_clr,
-             self._sio_oe_set, self._sio_oe_clr) = sio
-            self._read_raw = self._read_raw_rp2
-            self._tristate = self._tristate_rp2
-            self._drive = self._drive_rp2
+        all_pins = tuple(cfg.ROW_PINS) + tuple(cfg.COL_PINS) + tuple(cfg.AUX_PINS)
+        reg = _detect_register_addresses()
+        # the register path reaches only the low GPIO bank (0..31)
+        if reg is not None and all(g < 32 for g in all_pins):
+            # fast register path with chip-correct register addresses
+            (self._reg_in, self._reg_out_set, self._reg_out_clr,
+             self._reg_oe_set, self._reg_oe_clr) = reg
+            self._read_raw = self._read_raw_reg
+            self._tristate = self._tristate_reg
+            self._drive = self._drive_reg
         else:
             # portable Pin-object path: correct on any port, and the
             # fallback for RP2 chips whose SIO layout we can't identify
@@ -215,21 +250,22 @@ class RemoteKeyboard:
         self._timer = None
 
     # ---- low-level GPIO helpers -------------------------------------
-    # RP2 path: direct SIO register access (fast, allocation-free)
+    # Register path: direct GPIO register access (RP2 SIO or ESP32 GPIO;
+    # fast, allocation-free)
 
-    def _read_raw_rp2(self):
-        return mem32[self._sio_in]
+    def _read_raw_reg(self):
+        return mem32[self._reg_in]
 
-    def _tristate_rp2(self, gpio_mask):
-        mem32[self._sio_oe_clr] = gpio_mask
-        mem32[self._sio_out_clr] = gpio_mask
+    def _tristate_reg(self, gpio_mask):
+        mem32[self._reg_oe_clr] = gpio_mask
+        mem32[self._reg_out_clr] = gpio_mask
 
-    def _drive_rp2(self, gpio_mask, high):
+    def _drive_reg(self, gpio_mask, high):
         if high:
-            mem32[self._sio_out_set] = gpio_mask
+            mem32[self._reg_out_set] = gpio_mask
         else:
-            mem32[self._sio_out_clr] = gpio_mask
-        mem32[self._sio_oe_set] = gpio_mask
+            mem32[self._reg_out_clr] = gpio_mask
+        mem32[self._reg_oe_set] = gpio_mask
 
     # Generic path: Pin objects (slower; positional args only so the
     # calls stay allocation-free)
@@ -459,7 +495,8 @@ class RemoteKeyboard:
             try:
                 p.irq(handler=handler, trigger=trigger, hard=True)
             except (TypeError, ValueError):
-                # port without hard IRQ support (e.g. ESP32): soft IRQ
+                # port or pin without hard-IRQ support: fall back to a
+                # soft IRQ (the register path stays correct, just slower)
                 p.irq(handler=handler, trigger=trigger)
         if self.n_aux:
             self._timer = Timer(

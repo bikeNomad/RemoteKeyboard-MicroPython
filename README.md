@@ -30,18 +30,25 @@ Default target: **Raspberry Pi Pico (RP2040)**. Default pins (edit
 Row pins are high-impedance inputs except while forcing a key; column
 pins are inputs with change interrupts; no internal pulls are used.
 
-**The RP2040 is a 3.3 V part.** The original AVR ran at 5 V; if the
-keyboard being tapped runs at 5 V you need level shifting on every
-matrix line.
+Also supported: **RP2350** (Pico 2) and **ESP32-S2/S3**. The firmware
+auto-detects the chip and uses the fast register path on any of them;
+pin numbers in `config.py` are still plain GPIO numbers. On ESP32-S2/S3
+keep every configured pin below GPIO 32 and off the strapping,
+flash/PSRAM, and native-USB pins — see the example in `config.py`.
 
-On RP2040 and RP2350 the time-critical paths use direct SIO register
-access (`machine.mem32`) and the column IRQ runs as a hard interrupt
-with allocation-free code. The two chips have different SIO register
-layouts, so the firmware detects which one it is running on (from the
-machine name) and uses the matching register addresses; an RP2 chip it
-can't identify, and any other port, falls back to `machine.Pin` calls
-and soft IRQs (slower; whether the scan keeps up depends on how fast
-the appliance strobes its columns).
+**These are 3.3 V parts.** The original AVR ran at 5 V; if the keyboard
+being tapped runs at 5 V you need level shifting on every matrix line.
+
+On RP2040, RP2350, and ESP32-S2/S3 the time-critical paths use direct
+GPIO register access (`machine.mem32`) and the column IRQ runs as a
+hard interrupt with allocation-free code. Register layouts differ by
+chip (the two RP2 chips even differ from each other, and RP2350
+interleaves its high-bank registers), so the firmware detects which one
+it is running on from the machine name and uses the matching register
+addresses. The register path reaches only GPIOs 0–31; a chip it can't
+identify, a config using a pin ≥ 32, or any other port, falls back to
+`machine.Pin` calls and soft IRQs (slower; whether the scan keeps up
+depends on how fast the appliance strobes its columns).
 
 ## Installing
 
