@@ -7,6 +7,9 @@
 # Exit with Ctrl-C or Ctrl-D.
 #
 # Usage: python3 terminal.py [port [baud]]
+#        python3 terminal.py ws://<board-ip>/ws [token]   (over WiFi)
+#        python3 terminal.py http://remotekeyboard.local [token]
+# For WiFi the token may also come from the RK_TOKEN environment variable.
 
 import select
 import sys

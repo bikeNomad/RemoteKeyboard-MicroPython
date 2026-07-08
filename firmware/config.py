@@ -48,3 +48,25 @@ BAUD = 38400
 
 # Key event queue size (power of 2)
 EVENT_QUEUE_SIZE = 64
+
+# ---- WiFi web terminal (Pico 2 W / Pico W / ESP32-S2/S3) ------------
+# When WIFI_SSID is non-empty and the port has asyncio, the firmware also
+# serves a browser terminal and a WebSocket alongside the USB/UART link
+# (all transports run at once). Leave WIFI_SSID empty to disable
+# networking entirely (USB/UART only). Station mode: the board joins your
+# existing WiFi and you connect to the IP it prints on the serial link.
+WIFI_SSID = ""
+WIFI_PASSWORD = ""
+
+# DHCP hostname to request; where mDNS is available you can then reach the
+# board at http://<name>.local/. Empty to leave the port default.
+WIFI_HOSTNAME = "remotekeyboard"
+
+# TCP port for the web terminal and WebSocket.
+WEB_PORT = 80
+
+# Shared secret required to open the WebSocket (browser connects to
+# ws://<board>/ws?token=...). REQUIRED for networking: an empty token
+# disables the WebSocket, because a network-reachable keyboard injector
+# must not be open to anyone on the LAN. Set this before enabling WiFi.
+AUTH_TOKEN = ""

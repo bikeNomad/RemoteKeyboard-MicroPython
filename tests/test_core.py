@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(ROOT, "firmware"))
 
 from core import (  # noqa: E402
     EVENT_PRESS,
+    CommandBuffer,
     EventQueue,
     MatrixDebouncer,
     event_column,
@@ -107,6 +108,41 @@ class TestEventQueue(unittest.TestCase):
                 self.assertEqual(event_row(ev), row)
                 self.assertEqual(event_column(ev), col)
                 self.assertTrue(ev & EVENT_PRESS)
+
+
+class TestCommandBuffer(unittest.TestCase):
+    def setUp(self):
+        self.cmds = []
+        self.overflows = []
+
+    def feed(self, buf, s):
+        buf.feed(s, self.cmds.append, self.overflows.append)
+
+    def test_command_emitted_on_cr(self):
+        b = CommandBuffer()
+        self.feed(b, "p23\r")
+        self.assertEqual(self.cmds, ["p23"])
+        self.assertEqual(self.overflows, [])
+
+    def test_lf_ignored_and_reads_may_split(self):
+        b = CommandBuffer()
+        self.feed(b, "p2")
+        self.feed(b, "3\r\n")
+        self.assertEqual(self.cmds, ["p23"])
+
+    def test_empty_command_preserved(self):
+        # a lone CR is the debug-dump command
+        b = CommandBuffer()
+        self.feed(b, "\r")
+        self.assertEqual(self.cmds, [""])
+
+    def test_overflow_flushes_and_recovers(self):
+        b = CommandBuffer(max_len=7)
+        self.feed(b, "12345678")  # 8th char overflows the 7-char buffer
+        self.assertEqual(self.overflows, ["1234567"])
+        self.assertEqual(self.cmds, [])
+        self.feed(b, "p23\r")  # buffer usable again after overflow
+        self.assertEqual(self.cmds, ["p23"])
 
 
 if __name__ == "__main__":

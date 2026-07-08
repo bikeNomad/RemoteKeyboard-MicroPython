@@ -31,7 +31,14 @@ import select
 import machine
 from machine import Pin, Timer, mem32
 
-from core import MatrixDebouncer, EventQueue, EVENT_PRESS, event_row, event_column
+from core import (
+    MatrixDebouncer,
+    EventQueue,
+    CommandBuffer,
+    EVENT_PRESS,
+    event_row,
+    event_column,
+)
 
 # Fast, allocation-free GPIO access from the column hard IRQ uses direct
 # register writes via machine.mem32. Two chip families are supported;
@@ -443,17 +450,24 @@ class RemoteKeyboard:
 
     # ---- serial protocol (main loop context) -------------------------
 
-    def _send_events(self):
-        io = self._io
+    def _send_events(self, writers=None):
+        # writers is an iterable of write(str) callables; events are
+        # broadcast to every connected transport. Defaults to the primary
+        # local transport so single-transport callers (and tests) are
+        # unchanged.
+        if writers is None:
+            writers = (self._io.write,)
         while True:
             ev = self.queue.get()
             if ev < 0:
                 return
             state = "p" if ev & EVENT_PRESS else "r"
-            io.write(f"{state}{event_row(ev)}{event_column(ev)}\r\n")
+            line = f"{state}{event_row(ev)}{event_column(ev)}\r\n"
+            for write in writers:
+                write(line)
 
-    def _dump(self):
-        io = self._io
+    def _dump(self, out=None):
+        io = out if out is not None else self._io
         io.write(f"\r\nchi: {self.seen_cols_high:02X} clo: {self.seen_cols_low:02X}\r\n")
         io.write(f"rhi: {self.seen_rows_high:02X} rlo: {self.seen_rows_low:02X}\r\n")
         io.write("Co Fo Ac Pr Re CSTR\r\n")
@@ -467,9 +481,15 @@ class RemoteKeyboard:
         io.write(f"Ov: {self.queue.overflows:02X}\r\n")
         self.queue.overflows = 0
 
-    def _handle_command(self, cmd):
+    def _handle_command(self, cmd, out=None):
+        # out is the transport that sent the command; replies (debug dump,
+        # error echoes) go back to it. forced[] is written only from this
+        # command path, which runs in the cooperative main context (the
+        # asyncio loop or the blocking run() loop), never from an ISR.
+        if out is None:
+            out = self._io
         if cmd == "":
-            self._dump()
+            self._dump(out)
             return
         if cmd == "R":
             machine.reset()
@@ -478,13 +498,12 @@ class RemoteKeyboard:
             col = ord(cmd[2]) - 0x30
             if (0 <= row < self.n_rows and 0 <= col <= self.n_cols
                     and not (col == self.n_cols and row >= self.n_aux)):
-                # forced[] is written only here (main loop); ISRs only read
                 if cmd[0] == "p":
                     self.forced[col] |= 1 << row
                 else:
                     self.forced[col] &= 0xFF & ~(1 << row)
                 return
-        self._io.write(f"{cmd}?\r\n")
+        out.write(f"{cmd}?\r\n")
 
     # ---- setup and main loop -----------------------------------------
 
@@ -506,20 +525,17 @@ class RemoteKeyboard:
             )
 
     def run(self):
+        # Blocking single-transport loop (USB or UART), kept as a simple
+        # fallback for ports without asyncio/WiFi. The networked build
+        # uses server.serve() instead; see main.py.
         self._install_irqs()
         io = self._io
         io.write(BANNER)
-        buf = ""
+        cmds = CommandBuffer()
+        on_command = lambda cmd: self._handle_command(cmd, io)
+        on_overflow = lambda line: io.write(f"{line}?\r\n")
         while True:
             self._send_events()
             ch = io.read_char(10)
-            if ch is None or ch == "\n":
-                continue
-            if ch == "\r":
-                self._handle_command(buf)
-                buf = ""
-            elif len(buf) < 7:
-                buf += ch
-            else:
-                io.write(f"{buf}?\r\n")
-                buf = ""
+            if ch:
+                cmds.feed(ch, on_command, on_overflow)

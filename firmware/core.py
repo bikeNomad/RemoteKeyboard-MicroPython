@@ -61,6 +61,35 @@ class MatrixDebouncer:
         return report
 
 
+class CommandBuffer:
+    """Assembles carriage-return-terminated commands from a byte stream.
+
+    One instance per transport (USB, UART, each WebSocket client) so each
+    connection has its own partial line. feed() splits on '\\r' exactly
+    like the original main loop: '\\n' is ignored, a command is emitted on
+    '\\r', and a line longer than max_len is flushed to on_overflow (which
+    the AVR/serial protocol echoes back as ``line?``). Pure logic, unit
+    tested on the host.
+    """
+
+    def __init__(self, max_len=7):
+        self.max_len = max_len
+        self.buf = ""
+
+    def feed(self, chars, on_command, on_overflow):
+        for ch in chars:
+            if ch == "\n" or ch == "":
+                continue
+            if ch == "\r":
+                on_command(self.buf)
+                self.buf = ""
+            elif len(self.buf) < self.max_len:
+                self.buf += ch
+            else:
+                on_overflow(self.buf)
+                self.buf = ""
+
+
 class EventQueue:
     """Lock-free single-producer/single-consumer byte ring buffer.
 

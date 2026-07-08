@@ -6,6 +6,18 @@ import micropython
 micropython.alloc_emergency_exception_buf(100)
 
 import config
-from remotekeyboard import RemoteKeyboard
 
-RemoteKeyboard(config).run()
+try:
+    import asyncio
+except ImportError:  # port without asyncio: fall back to the blocking loop
+    asyncio = None
+
+if asyncio is not None:
+    # networked build: USB/UART and (if configured) WiFi WebSocket at once
+    import server
+
+    asyncio.run(server.serve(config))
+else:
+    from remotekeyboard import RemoteKeyboard
+
+    RemoteKeyboard(config).run()

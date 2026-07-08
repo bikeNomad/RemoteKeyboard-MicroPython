@@ -4,6 +4,7 @@
 # every few seconds, then clears it.
 #
 # Usage: python3 demo.py [port [baud]]
+#        python3 demo.py ws://<board-ip>/ws [token]   (over WiFi)
 
 import sys
 import time

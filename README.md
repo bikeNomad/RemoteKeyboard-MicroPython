@@ -52,16 +52,69 @@ depends on how fast the appliance strobes its columns).
 
 ## Installing
 
+The web terminal depends on [microdot](https://github.com/miguelgrinberg/microdot),
+included as a git submodule under `third_party/microdot`. Fetch it once
+after cloning (or clone with `--recurse-submodules`):
+
+```bash
+git submodule update --init
+```
+
 Copy the firmware to the board (it starts automatically via `main.py`):
 
 ```bash
-mpremote cp firmware/core.py firmware/config.py firmware/remotekeyboard.py firmware/main.py :
+mpremote cp firmware/core.py firmware/config.py firmware/remotekeyboard.py \
+            firmware/server.py firmware/main.py firmware/index.html :
+mpremote cp -r third_party/microdot/src/microdot :
 mpremote reset
 ```
+
+(The `server.py`, `index.html`, and `microdot` package are only needed for
+the WiFi web terminal below; the USB/UART link works without them if you
+also drop the `import server` path from `main.py`. Only microdot's
+`__init__.py`, `microdot.py`, `helpers.py`, and `websocket.py` are used,
+so you can trim the copied package to those four files to save flash.)
 
 By default the serial link is the Pico's USB serial port. To use a
 hardware UART instead (38400 8N1, like the AVR original), set
 `USE_UART = True` in `config.py`.
+
+## WiFi and the browser terminal
+
+On a WiFi board (Pico 2 W, Pico W, or ESP32-S2/S3) the firmware can serve
+a small browser terminal and a WebSocket **at the same time** as the
+USB/UART link — all transports run together. Key events are broadcast to
+every connected client; commands from any client are handled
+independently.
+
+This works because the design already decouples scanning from
+transmission: the hard column IRQ and the aux timer only push events into
+`core.EventQueue`, and an asyncio task drains that queue and fans events
+out to the transports. The time-critical, allocation-free scanning code
+is untouched by networking.
+
+To enable it, edit `config.py`:
+
+```python
+WIFI_SSID = "your-network"
+WIFI_PASSWORD = "your-password"
+AUTH_TOKEN = "pick-a-secret"   # required; empty disables the WebSocket
+```
+
+The board joins your network (station mode) and prints its address on the
+serial link, e.g. `WiFi connected: http://192.168.1.50:80/`. Open that URL
+in a browser, enter the token when prompted (or append `?token=...` to the
+URL), and you get a live terminal: it shows key presses/releases as they
+happen and lets you simulate keys or send raw protocol commands.
+
+`AUTH_TOKEN` is mandatory: a network-reachable keyboard injector must not
+be open to everyone on the LAN, so an empty token disables the WebSocket.
+The token is passed as the `?token=` query parameter on the WebSocket URL.
+
+Requirements: MicroPython with `asyncio` (standard) and the `microdot`
+package (the `third_party/microdot` submodule, copied above). If
+`WIFI_SSID` is empty, or the port has no `asyncio`, the firmware falls
+back to the plain USB/UART loop.
 
 ## Serial protocol
 
@@ -99,6 +152,16 @@ python3 host/terminal.py
 python3 host/demo.py
 ```
 
+They can also talk to the device over WiFi instead of serial: pass a
+`ws://`/`http://` URL as the first argument and the token as the second
+(or via the `RK_TOKEN` environment variable). This needs the
+`websocket-client` package (`pip install websocket-client`):
+
+```bash
+python3 host/terminal.py ws://192.168.1.50/ws my-secret
+RK_TOKEN=my-secret python3 host/terminal.py http://remotekeyboard.local
+```
+
 ## Tests
 
 The debounce/queue core and the host keyboard logic are pure Python and
@@ -113,7 +176,10 @@ python3 -m unittest discover -s tests
 ## Layout
 
 ```
-firmware/   device code: main.py, config.py, remotekeyboard.py, core.py
-host/       host scripts: terminal.py, demo.py, remotekeyboard_host.py
-tests/      CPython unit tests for core.py and remotekeyboard_host.py
+firmware/       device code: main.py, config.py, remotekeyboard.py,
+                core.py, server.py (asyncio/WiFi orchestration),
+                index.html (web terminal)
+host/           host scripts: terminal.py, demo.py, remotekeyboard_host.py
+tests/          CPython unit tests for core.py and remotekeyboard_host.py
+third_party/    microdot web framework (git submodule)
 ```

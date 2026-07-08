@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RemoteKeyboard</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --line: #2a2f3a;
+    --text: #d7dce5;
+    --muted: #8b93a3;
+    --accent: #5cc8ff;
+    --press: #56d364;
+    --release: #ff7b72;
+    --warn: #e3b341;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header h1 {
+    font-size: 15px;
+    margin: 0;
+    font-weight: 600;
+    letter-spacing: .3px;
+  }
+  header .spacer { flex: 1; }
+  .status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .status.on .dot { background: var(--press); box-shadow: 0 0 8px var(--press); }
+  .status.off .dot { background: var(--release); }
+  button, input {
+    font: inherit;
+    color: var(--text);
+    background: var(--panel-2);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 7px 12px;
+  }
+  button { cursor: pointer; transition: border-color .15s, background .15s; }
+  button:hover { border-color: var(--accent); }
+  button.ghost { background: transparent; }
+  input:focus { outline: none; border-color: var(--accent); }
+  main {
+    flex: 1;
+    display: flex;
+    min-height: 0;
+    padding: 12px;
+    gap: 12px;
+  }
+  #log {
+    flex: 1;
+    background: #0b0d11;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .side {
+    width: 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .card h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: .6px;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+  .row { display: flex; gap: 8px; }
+  .row + .row { margin-top: 8px; }
+  .row.grid2 > * { flex: 1; }
+  label.small { font-size: 11px; color: var(--muted); display: block; margin-bottom: 3px; }
+  .num { width: 100%; text-align: center; }
+  footer {
+    display: flex;
+    gap: 8px;
+    padding: 12px;
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+  }
+  #cmd { flex: 1; }
+  .evt-press { color: var(--press); }
+  .evt-release { color: var(--release); }
+  .sys { color: var(--muted); }
+  .warn { color: var(--warn); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>RemoteKeyboard</h1>
+    <span id="status" class="status off"><span class="dot"></span><span id="statusText">disconnected</span></span>
+    <div class="spacer"></div>
+    <button id="settingsBtn" class="ghost">Token…</button>
+    <button id="reconnectBtn" class="ghost">Reconnect</button>
+  </header>
+
+  <main>
+    <div id="log" aria-live="polite"></div>
+    <div class="side">
+      <div class="card">
+        <h2>Simulate key</h2>
+        <div class="row grid2">
+          <div>
+            <label class="small">Row (0–7)</label>
+            <input id="row" class="num" type="number" min="0" max="7" value="0">
+          </div>
+          <div>
+            <label class="small">Col (0–6, 7=aux)</label>
+            <input id="col" class="num" type="number" min="0" max="7" value="0">
+          </div>
+        </div>
+        <div class="row grid2">
+          <button id="pressBtn">Press</button>
+          <button id="releaseBtn">Release</button>
+        </div>
+        <div class="row">
+          <button id="tapBtn" style="flex:1">Tap (press + release)</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Device</h2>
+        <div class="row grid2">
+          <button id="dumpBtn">Dump state</button>
+          <button id="resetBtn">Reset</button>
+        </div>
+        <div class="row">
+          <button id="clearBtn" class="ghost" style="flex:1">Clear log</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <input id="cmd" placeholder="raw command, e.g. p23  (Enter sends, appends CR)" autocomplete="off">
+    <button id="sendBtn">Send</button>
+  </footer>
+
+<script>
+(function () {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const logEl = $("log"), statusEl = $("status"), statusText = $("statusText");
+  let ws = null, reconnectTimer = null, wantOpen = true;
+
+  function getToken() {
+    const url = new URLSearchParams(location.search).get("token");
+    if (url) { localStorage.setItem("rk_token", url); return url; }
+    return localStorage.getItem("rk_token") || "";
+  }
+
+  function log(text, cls) {
+    const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 4;
+    const span = document.createElement("span");
+    if (cls) span.className = cls;
+    span.textContent = text;
+    logEl.appendChild(span);
+    if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  // Annotate the device's line-oriented protocol as it streams in.
+  let rxBuf = "";
+  function onData(chunk) {
+    rxBuf += chunk;
+    let nl;
+    while ((nl = rxBuf.indexOf("\n")) >= 0) {
+      let line = rxBuf.slice(0, nl).replace(/\r$/, "");
+      rxBuf = rxBuf.slice(nl + 1);
+      renderLine(line);
+    }
+  }
+  function renderLine(line) {
+    const m = /^([pr])([0-7])([0-7])$/.exec(line);
+    if (m) {
+      const press = m[1] === "p";
+      log((press ? "▼ press  " : "▲ release") + "  row " + m[2] + " col " + m[3] + "\n",
+          press ? "evt-press" : "evt-release");
+    } else if (/unauthorized/i.test(line)) {
+      log(line + "\n", "warn");
+    } else if (line.length) {
+      log(line + "\n", "sys");
+    }
+  }
+
+  function setStatus(state, text) {
+    statusEl.className = "status " + state;
+    statusText.textContent = text;
+  }
+
+  function connect() {
+    const token = getToken();
+    if (!token) { promptToken(); return; }
+    wantOpen = true;
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const url = proto + "://" + location.host + "/ws?token=" + encodeURIComponent(token);
+    setStatus("off", "connecting…");
+    try { ws = new WebSocket(url); } catch (e) { scheduleReconnect(); return; }
+    ws.onopen = () => setStatus("on", "connected");
+    ws.onmessage = (e) => onData(typeof e.data === "string" ? e.data : "");
+    ws.onclose = () => { setStatus("off", "disconnected"); if (wantOpen) scheduleReconnect(); };
+    ws.onerror = () => { try { ws.close(); } catch (_) {} };
+  }
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(connect, 1500);
+  }
+
+  function send(text) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(text);
+    } else {
+      log("(not connected)\n", "warn");
+    }
+  }
+  function sendCommand(cmd) { send(cmd + "\r"); }
+
+  function promptToken() {
+    const t = prompt("Access token (set AUTH_TOKEN in config.py):", getToken());
+    if (t !== null) {
+      localStorage.setItem("rk_token", t.trim());
+      if (ws) { wantOpen = false; try { ws.close(); } catch (_) {} }
+      connect();
+    }
+  }
+
+  // Controls
+  $("sendBtn").onclick = () => { const v = $("cmd").value.trim(); if (v) { sendCommand(v); $("cmd").value = ""; } };
+  $("cmd").addEventListener("keydown", (e) => { if (e.key === "Enter") $("sendBtn").click(); });
+  const rc = () => {
+    const r = Math.max(0, Math.min(7, parseInt($("row").value || "0", 10)));
+    const c = Math.max(0, Math.min(7, parseInt($("col").value || "0", 10)));
+    return "" + r + c;
+  };
+  $("pressBtn").onclick = () => sendCommand("p" + rc());
+  $("releaseBtn").onclick = () => sendCommand("r" + rc());
+  $("tapBtn").onclick = () => { const k = rc(); sendCommand("p" + k); sendCommand("r" + k); };
+  $("dumpBtn").onclick = () => sendCommand("");
+  $("resetBtn").onclick = () => { if (confirm("Reset the board?")) sendCommand("R"); };
+  $("clearBtn").onclick = () => { logEl.textContent = ""; };
+  $("settingsBtn").onclick = promptToken;
+  $("reconnectBtn").onclick = () => { wantOpen = false; if (ws) try { ws.close(); } catch (_) {}; connect(); };
+
+  connect();
+})();
+</script>
+</body>
+</html>

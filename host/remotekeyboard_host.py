@@ -8,6 +8,7 @@
 # Ned Konz, ned@bike-nomad.com
 
 import glob
+import os
 import re
 import sys
 import time
@@ -53,6 +54,52 @@ class SerialInterface:
         self.port.write(data.encode("ascii"))
         # 10 bits per byte on the wire (8N1: start + 8 data + stop)
         self.next_write = time.monotonic() + len(data) * 10.0 / self.baud + self.write_delay
+
+
+class WebSocketInterface:
+    """Connection to the RemoteKeyboard firmware's WiFi WebSocket.
+
+    Same read_available()/write() shape as SerialInterface, so Keyboard
+    works over WiFi unchanged. Requires the `websocket-client` package
+    (`pip install websocket-client`), imported lazily.
+    """
+
+    def __init__(self, url, token=None, write_delay=0.02):
+        import websocket  # websocket-client; lazy so serial use needs nothing
+
+        if token:
+            sep = "&" if "?" in url else "?"
+            url = "{}{}token={}".format(url, sep, token)
+        # enable_multithread: terminal.py reads in one thread, writes in another
+        self._ws = websocket.create_connection(url, enable_multithread=True)
+        self.write_delay = write_delay
+
+    def close(self):
+        try:
+            self._ws.close()
+        except Exception:
+            pass
+
+    def read_available(self, timeout=0.0, max_bytes=1000):
+        import websocket
+
+        self._ws.settimeout(timeout if timeout and timeout > 0 else 0.001)
+        try:
+            data = self._ws.recv()
+        except (websocket.WebSocketTimeoutException, OSError):
+            return ""
+        except Exception:
+            return ""
+        if not data:
+            return ""
+        if isinstance(data, bytes):
+            data = data.decode("ascii", "replace")
+        return data
+
+    def write(self, data):
+        self._ws.send(data)
+        if self.write_delay:
+            time.sleep(self.write_delay)
 
 
 class Keyboard:
@@ -312,9 +359,40 @@ def find_port():
     sys.exit(1)
 
 
+_WS_SCHEMES = ("ws://", "wss://", "http://", "https://")
+
+
+def _to_ws_url(arg):
+    """Normalize a user-supplied URL to a ws(s):// URL with a path.
+
+    http(s):// becomes ws(s)://, and a bare host (no path) gets /ws.
+    """
+    url = arg
+    if url.startswith("http://"):
+        url = "ws://" + url[len("http://"):]
+    elif url.startswith("https://"):
+        url = "wss://" + url[len("https://"):]
+    scheme, rest = url.split("://", 1)
+    if "/" not in rest:
+        rest += "/ws"
+    return scheme + "://" + rest
+
+
 def open_keyboard(argv):
-    """Open a BrotherPTouchHomeAndHobby from command-line arguments."""
-    port = argv[1] if len(argv) > 1 else find_port()
-    baud = int(argv[2]) if len(argv) > 2 else DEFAULT_BAUD
+    """Open a BrotherPTouchHomeAndHobby from command-line arguments.
+
+    First argument may be a serial port (default), or a WebSocket/HTTP URL
+    to reach the firmware over WiFi (e.g. ws://192.168.1.50/ws or
+    http://remotekeyboard.local). For WiFi, the second argument (or the
+    RK_TOKEN environment variable) supplies the AUTH_TOKEN.
+    """
+    args = argv[1:]
+    if args and args[0].startswith(_WS_SCHEMES):
+        url = _to_ws_url(args[0])
+        token = args[1] if len(args) > 1 else os.environ.get("RK_TOKEN")
+        print(f"Using WebSocket {url}", file=sys.stderr)
+        return BrotherPTouchHomeAndHobby(WebSocketInterface(url, token))
+    port = args[0] if args else find_port()
+    baud = int(args[1]) if len(args) > 1 else DEFAULT_BAUD
     print(f"Using serial port {port}", file=sys.stderr)
     return BrotherPTouchHomeAndHobby(SerialInterface(port, baud))
