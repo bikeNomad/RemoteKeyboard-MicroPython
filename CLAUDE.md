@@ -30,11 +30,18 @@ runs under it, and all firmware files should stay compilable with it:
   under both CPython (for tests) and MicroPython. Do not import
   `machine`/`micropython` there.
 - `firmware/remotekeyboard.py` holds all hardware access. The column pin
-  IRQ runs **hard** on RP2040: its call paths (`_col_isr`, `_read_rows`,
-  `_assert_rows`, `_queue_reports`, the `core.py` methods, and the RP2
-  GPIO helpers) must not allocate — no f-strings, floats, or
+  IRQ runs **hard** on RP2040/RP2350: its call paths (`_col_isr`,
+  `_read_rows`, `_assert_rows`, `_queue_reports`, the `core.py` methods,
+  and the RP2 GPIO helpers) must not allocate — no f-strings, floats, or
   `for i in range(...)`; they use `while` loops, preallocated
   bytearray/array tables, and `mem32` SIO register access.
+- The SIO register map differs between RP2040 and RP2350 (RP2350
+  interleaves the high-bank GPIO registers), so `sio_addresses_for()`
+  picks the right addresses from the machine name; unidentified RP2
+  chips fall back to the portable Pin path. If you touch those offsets,
+  verify against pico-sdk `hardware/regs/sio.h` — a wrong table silently
+  drives the wrong registers. `sio_addresses_for()` is a pure function
+  covered by tests/test_scanner.py.
 - ISRs never write to the serial port; key events go through
   `core.EventQueue` (SPSC ring: ISRs write head, main loop writes tail)
   and the main loop transmits them. The aux `Timer` callback wraps its

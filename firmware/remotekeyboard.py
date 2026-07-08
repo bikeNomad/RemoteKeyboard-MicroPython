@@ -30,7 +30,6 @@ import select
 
 import machine
 from machine import Pin, Timer, mem32
-from micropython import const
 
 from core import MatrixDebouncer, EventQueue, EVENT_PRESS, event_row, event_column
 
@@ -41,13 +40,56 @@ try:
 except ImportError:
     _RP2 = False
 
-# RP2040/RP2350 SIO registers: single-cycle GPIO access, safe and fast
-# inside hard IRQ handlers
-_SIO_GPIO_IN = const(0xD0000004)
-_SIO_GPIO_OUT_SET = const(0xD0000014)
-_SIO_GPIO_OUT_CLR = const(0xD0000018)
-_SIO_GPIO_OE_SET = const(0xD0000024)
-_SIO_GPIO_OE_CLR = const(0xD0000028)
+# SIO single-cycle GPIO registers: fast, allocation-free access from a
+# hard IRQ. The SIO base is 0xD0000000 on both RP2 chips, but RP2350
+# interleaves the high-bank (GPIO 32+) registers between the low-bank
+# ones, so every offset except GPIO_IN differs from RP2040. Guessing is
+# unsafe: applying the RP2040 offsets on an RP2350 puts GPIO_OUT_CLR
+# where GPIO_OUT_SET lives, so a pin *clear* would *set* the pin.
+# Offsets verified against pico-sdk hardware/regs/sio.h for each chip.
+_SIO_BASE = 0xD0000000
+# (GPIO_IN, GPIO_OUT_SET, GPIO_OUT_CLR, GPIO_OE_SET, GPIO_OE_CLR)
+_SIO_OFFSETS = {
+    "RP2040": (0x004, 0x014, 0x018, 0x024, 0x028),
+    "RP2350": (0x004, 0x018, 0x020, 0x038, 0x040),
+}
+
+
+def sio_addresses_for(machine_name):
+    """Absolute (IN, OUT_SET, OUT_CLR, OE_SET, OE_CLR) SIO addresses for
+    the RP2 chip named in machine_name (as from os.uname().machine or
+    sys.implementation._machine), or None if it names no known RP2 chip.
+    An unrecognized chip must fall back to the portable Pin path rather
+    than drive registers at guessed offsets."""
+    if machine_name:
+        # test RP2350 first: "RP2350-RISCV" also contains it, and has
+        # the same SIO layout (same chip, different core)
+        for chip in ("RP2350", "RP2040"):
+            if chip in machine_name:
+                return tuple(_SIO_BASE + off for off in _SIO_OFFSETS[chip])
+    return None
+
+
+def _detect_sio_addresses():
+    """Identify the running RP2 chip from the machine name and return
+    its SIO addresses, or None if it can't be positively identified."""
+    names = []
+    try:
+        names.append(sys.implementation._machine)
+    except AttributeError:
+        pass
+    try:
+        import os
+
+        names.append(os.uname().machine)
+    except Exception:
+        pass
+    for name in names:
+        addrs = sio_addresses_for(name)
+        if addrs is not None:
+            return addrs
+    return None
+
 
 BANNER = "RemoteKeyboard v2.0 (MicroPython) by Ned Konz\r\n"
 
@@ -149,12 +191,18 @@ class RemoteKeyboard:
         self.col_pins = [Pin(g, Pin.IN) for g in cfg.COL_PINS]
         self.aux_pins = [Pin(g, Pin.IN) for g in cfg.AUX_PINS]
 
-        if _RP2:
+        sio = _detect_sio_addresses() if _RP2 else None
+        if sio is not None:
+            # fast SIO-register path with chip-correct register addresses
+            (self._sio_in, self._sio_out_set, self._sio_out_clr,
+             self._sio_oe_set, self._sio_oe_clr) = sio
             self._read_raw = self._read_raw_rp2
             self._tristate = self._tristate_rp2
             self._drive = self._drive_rp2
         else:
-            # (gpio bit, Pin) pairs for the generic fallback
+            # portable Pin-object path: correct on any port, and the
+            # fallback for RP2 chips whose SIO layout we can't identify
+            # (gpio bit, Pin) pairs for the generic path
             self._io_pins = tuple(
                 (1 << g, Pin(g, Pin.IN))
                 for g in tuple(cfg.ROW_PINS) + tuple(cfg.COL_PINS) + tuple(cfg.AUX_PINS)
@@ -170,18 +218,18 @@ class RemoteKeyboard:
     # RP2 path: direct SIO register access (fast, allocation-free)
 
     def _read_raw_rp2(self):
-        return mem32[_SIO_GPIO_IN]
+        return mem32[self._sio_in]
 
     def _tristate_rp2(self, gpio_mask):
-        mem32[_SIO_GPIO_OE_CLR] = gpio_mask
-        mem32[_SIO_GPIO_OUT_CLR] = gpio_mask
+        mem32[self._sio_oe_clr] = gpio_mask
+        mem32[self._sio_out_clr] = gpio_mask
 
     def _drive_rp2(self, gpio_mask, high):
         if high:
-            mem32[_SIO_GPIO_OUT_SET] = gpio_mask
+            mem32[self._sio_out_set] = gpio_mask
         else:
-            mem32[_SIO_GPIO_OUT_CLR] = gpio_mask
-        mem32[_SIO_GPIO_OE_SET] = gpio_mask
+            mem32[self._sio_out_clr] = gpio_mask
+        mem32[self._sio_oe_set] = gpio_mask
 
     # Generic path: Pin objects (slower; positional args only so the
     # calls stay allocation-free)

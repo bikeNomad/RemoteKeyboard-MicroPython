@@ -34,11 +34,14 @@ pins are inputs with change interrupts; no internal pulls are used.
 keyboard being tapped runs at 5 V you need level shifting on every
 matrix line.
 
-On RP2040 the time-critical paths use direct SIO register access
-(`machine.mem32`) and the column IRQ runs as a hard interrupt with
-allocation-free code. Other ports fall back to `machine.Pin` calls and
-soft IRQs (slower; whether the scan keeps up depends on how fast the
-appliance strobes its columns).
+On RP2040 and RP2350 the time-critical paths use direct SIO register
+access (`machine.mem32`) and the column IRQ runs as a hard interrupt
+with allocation-free code. The two chips have different SIO register
+layouts, so the firmware detects which one it is running on (from the
+machine name) and uses the matching register addresses; an RP2 chip it
+can't identify, and any other port, falls back to `machine.Pin` calls
+and soft IRQs (slower; whether the scan keeps up depends on how fast
+the appliance strobes its columns).
 
 ## Installing
 

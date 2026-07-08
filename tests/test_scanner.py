@@ -77,8 +77,41 @@ def _install_fake_modules():
 
 
 _install_fake_modules()
-from remotekeyboard import RemoteKeyboard  # noqa: E402
+from remotekeyboard import RemoteKeyboard, sio_addresses_for  # noqa: E402
 from core import EVENT_PRESS  # noqa: E402
+
+
+class TestSioAddresses(unittest.TestCase):
+    # Offsets are verified against pico-sdk hardware/regs/sio.h. RP2350
+    # interleaves the high-bank GPIO registers, so only GPIO_IN shares
+    # an offset with RP2040.
+    RP2040 = (0xD0000004, 0xD0000014, 0xD0000018, 0xD0000024, 0xD0000028)
+    RP2350 = (0xD0000004, 0xD0000018, 0xD0000020, 0xD0000038, 0xD0000040)
+
+    def test_rp2040(self):
+        self.assertEqual(
+            sio_addresses_for("Raspberry Pi Pico with RP2040"), self.RP2040
+        )
+
+    def test_rp2350_arm(self):
+        self.assertEqual(
+            sio_addresses_for("Raspberry Pi Pico 2 with RP2350"), self.RP2350
+        )
+
+    def test_rp2350_riscv_uses_rp2350_map(self):
+        # "RP2350-RISCV" must select the RP2350 layout, not fall through
+        self.assertEqual(
+            sio_addresses_for("Pico 2 with RP2350-RISCV"), self.RP2350
+        )
+
+    def test_out_clr_differs_between_chips(self):
+        # the dangerous case: RP2040's OUT_CLR offset is RP2350's OUT_SET
+        self.assertNotEqual(self.RP2040[2], self.RP2350[2])
+        self.assertEqual(self.RP2040[2], self.RP2350[1])
+
+    def test_unknown_chip_returns_none(self):
+        for name in ("", None, "ESP32 module", "Some board with RP9999"):
+            self.assertIsNone(sio_addresses_for(name))
 
 
 class FakeIO:
